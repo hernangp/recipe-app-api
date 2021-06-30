@@ -922,7 +922,233 @@ docker-compose run app sh -c "python manage.py createsuperuser"
 
 Seguimos las instrucciones y ya tendremos nuestro supersuser creado y ya podremos loggearnos en el django admin. 
 
+ ### Vamos a crear los endpoints para agregar, modificar, borrar usuarios: 
+
+Primero creamos la app user para eso:
+En terminal:
+```
+docker-compose run --rm app sh -c "python manage.py user"
+
+En esta variante una vez que finaliza el comando borra el contenedor. No algo tan importante porque si corrieramos docker-compose down seria lo mismo. 
+
+Un vez que la app se inicio tenemos que limpiar la carpeta que se creo:
+
+> - Borramos el migrations
+> - Borramos el admin 
+> - Borramos el models
+
+Principalmente borramos lo anterior porque vamos a usar los que estan definidos en la core app. 
+
+Lo siguiente es modificar el settings.py para agregar en installed app lo agregado y lo que vamos a usar:
+
+```python
+INSTALLED_APPS = [
+    'django.contrib.admin',
+    'django.contrib.auth',
+    'django.contrib.contenttypes',
+    'django.contrib.sessions',
+    'django.contrib.messages',
+    'django.contrib.staticfiles',
+    'rest_framework',
+    'rest_framework.authtoken',
+    'core',
+    'users',
+]
+```
+### Vamos a crear la create_user API.
+
+Comenzamos creando los tests necesarios:
+
+```python
+test_users_api.py: 
+
+from django.test import TestCase
+from django.contrib.auth import get_user_model
+from django.urls import reverse
+
+from rest_framework.test import APIClient
+from rest_framework import status
 
 
+CREATE_USER_URL = reverse('user:create')
 
+
+def create_user(**params):
+    return get_user_model().objects.create_user(**params)
+
+
+class PublicUserApiTests(TestCase):
+    """Test Users API (public)"""
+
+    def setUP(self):
+        self.client = APIClient()
+
+    def test_create_valid_user_success(self):
+        """Test creating user with valid payload is succesfull"""
+    
+        payload = {
+            'email': 'test@mainqlabsdev.com',
+            'password': 'testpass',
+            'name': 'Test name',
+        }
+        res = self.client.post(CREATE_USER_URL, payload)
+
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        user = get_user_model().objects.get(**res.data)
+        self.assertTrue(user.check_password(payload['password']))
+        self.assertNotIn('password', res.data)
+
+    def test_user_exists(self):
+        """Test creating a user that already exists fails"""
+        payload = {'email': 'test@mainqlabsdev.com', 'password': 'testpass'}
+        create_user(**payload)
+
+        res = self.client.post(CREATE_USER_URL, payload)
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_password_too_short(self):
+        """Test that the password must be more than 5 characters"""
+        payload = {'email': 'test@mainqlabsdev.com', 'password': 'pw'}
+        res = self.client.post(CREATE_USER_URL, payload)
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        user_exists = get_user_model().objects.filter(
+            email=payload['email']
+        ).exists()
+        self.assertFalse(user_exists)
+```
+
+Del archivo lo mas importante es la diferenciación en el test para usuarios no autenticados y si autenticados.  
+
+Para test_create_user verificamos que cuando creamos un usuario valido, la respuesta sea la correcta y luego se verifica que el usuario fue realmente creado. Para esto obtenemos el user model pasando la respuesta obtenida y luego se verifica que la contraseña es correcta. Luego se verifica que la contraseña no es mostrada en la respuesta. 
+
+Luego se verifica que la respuesta sea correcta cuando se intenta crear un usuario que ya existe. Y que cuando se inserta una contraseña demasiado corta la respuesta sea la correcta. 
+
+Corremos el test y deberiamos tener el error de que no hay respuesta para url ya que esta no fue creada. 
+
+### Vamps a implementar la create_user API
+
+> Primero creamos el serializer:
+
+```python
+from django.contrib.auth import get_user_model
+
+from rest_framework import serializers
+
+
+class UserSerializer(serializers.ModelSerializer):
+    """Serializer for the users objects"""
+
+    class Meta:
+        model = get_user_model()
+        fields = ('email', 'password', 'name')
+        extra_kwargs = {'password': {'write_only': True, 'min_length': 5}}
+
+    def create(self, validated_data):
+        """Create a new user with encrypted password and return it"""
+        return get_user_model().objects.create_user(**validated_data)
+```
+
+
+> Seguido tenemos que modificar el archivo views.py:
+
+```python
+from rest_framework import generics
+
+from user.serializers import UserSerializer
+
+
+class CreateUserView(generics.CreateAPIView):
+    """Create a new user in the system"""
+    serializer_class = UserSerializer
+```
+
+Para esto estamos usando modulo generics y este nos permite crear una view muy rapidamente utilizando lo que provee rest_framework solo con el serializer que creamos anteriormente.
+
+
+> Tenemos que crear la url correspondiente a create_user
+
+Creamos un nuevo archivo urls.py: 
+
+```python
+from django.urls import path
+
+from user import views
+
+
+app_name = 'user'
+
+urlpatterns = [
+    path('create/', views.CreateUserView.as_view(), name='create'),
+]
+```
+
+> Tenemos que linkear la url creada a las urls de la app principal entonces en \recipe-app-api\app\app\urls.py
+
+```python
+from django.contrib import admin
+from django.urls import path, include
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('api/user/', include('user.urls')),
+]
+```
+
+Para esto usamos la helper function include() para pasar las url como un string.
+
+Con esto ya tenemos una API funcional para crear usuarios.
+
+### Ahora vamos a crear la API para generar un nuevo token.
+
+Con esta API a partir de un HTTP post vamos a generar un token temporal para usar despues para validar otros request que requieren autenticación. Esto sirve para que no tengamos que estar enviando le usuario y contraseña cada vez que hacemos un request. 
+
+Vamos a generar los tests necesarios en el archivo test_user_api:
+
+Agregamos los siguientes tests:
+
+```python
+    def test_create_token_for_user(self):
+        """Test that token is created for the user"""
+        payload = {'email': 'test@mainqlabsdev.com', 'password': 'testpass'}
+        create_user(**payload)
+        res = self.client.post(TOKEN_URL, payload)
+
+        self.assertIn('token', res.data)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+    
+    def test_create_token_invalid_credentials(self):
+        """Test that token is not created if invalid credentials are given"""
+        create_user(email='test@mainqlabsdev.com', password='testpass')
+        payload = {'email': 'test@mainqlabsdev.com', 'password': 'wrongpass'}
+        res = self.client.post(TOKEN_URL, payload)
+
+        self.assertNotIn('token', res.data)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_token_no_user(self):
+        """Test that token is not created if user doesn't exists"""
+        payload = {'email': 'test@mainqlabsdev.com', 'password': 'testpass'}
+        res = self.client.post(TOKEN_URL, payload)
+
+        self.assertNotIn('token', res.data)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_token_missing_field(self):
+        """Test that email and password are required"""
+        res = self.client.post(TOKEN_URL, {'email': 'one', 'password': ''})
+        self.assertNotIn('token', res.data)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+```
+tenemos que agregar la URL TOKEN_URL = reverse('user:token') a la que ya teniamos generados. 
+
+No hay muchas cosas que aclarar en estos tests la mayoria esta explicito en los nombres de las funciones. No se testea que el token generado este bien se confia en que django se encuentra funcionando bien. 
+
+Corremos el test y deberiamos tener el error de que el reverse para token no se encuentra ya qyue todavia no implementamos la función. 
+
+### Tenemos que implemntar create_token API:
+
+> Primero agregamos el serializer: 
 
