@@ -1146,9 +1146,396 @@ tenemos que agregar la URL TOKEN_URL = reverse('user:token') a la que ya teniamo
 
 No hay muchas cosas que aclarar en estos tests la mayoria esta explicito en los nombres de las funciones. No se testea que el token generado este bien se confia en que django se encuentra funcionando bien. 
 
-Corremos el test y deberiamos tener el error de que el reverse para token no se encuentra ya qyue todavia no implementamos la función. 
+Corremos el test y deberiamos tener el error de que el reverse para token no se encuentra ya que todavia no implementamos la función. 
 
 ### Tenemos que implemntar create_token API:
 
 > Primero agregamos el serializer: 
+
+```python
+from django.contrib.auth import get_user_model, authenticate
+from django.utils.translation import ugettext_lazy as _
+
+from rest_framework import serializers
+
+
+class UserSerializer(serializers.ModelSerializer):
+    """Serializer for the users objects"""
+
+    class Meta:
+        model = get_user_model()
+        fields = ('email', 'password', 'name')
+        extra_kwargs = {'password': {'write_only': True, 'min_length': 5}}
+
+    def create(self, validated_data):
+        """Create a new user with encrypted password and return it"""
+        return get_user_model().objects.create_user(**validated_data)
+
+
+class AuthTokenSerializer(serializers.Serializer):
+    """Serializer for the user authentication object"""
+    email = serializers.CharField()
+    password = serializers.CharField(
+        style={'input_type': 'password'},
+        trim_whitespace=False
+    )
+
+    def validate(self, attrs):
+        """Validate and authenticate the user"""
+        email = attrs.get('email')
+        password = attrs.get('password')
+
+        user = authenticate(
+            request=self.context.get('request'),
+            username=email,
+            password=password
+        )
+        if not user:
+            msg = _('Unable to authenticate with provided credentials')
+            raise serializers.ValidationError(msg, code='authentication')
+
+        attrs['user'] = user
+        return attrs
+```
+
+En este caso creamos el serializer basandonos en el modulo estandar de django serializers. 
+
+Utilizamos la funcion authenticate es un helper command que nos permite authenticar un request pasandole el usuario y contraseña. 
+
+importamos el modulo de translation ya que queremos mostrar un mensaje y siempre lo optimo es hacerlo a traves del motor de traducciones. 
+el trim whitespace es para que quite los espacios en el inicio y final de la contraseña, ya que se permiten espacios en el ingreso de una contraseña. 
+
+Ahora utilizamos la funcion authenticate. El primer argumento es el request que queremos validar, despues tenemos que pasar el usuario y la contraseña. 
+
+> Creamos la vista en views.py:
+
+```python
+from rest_framework import generics
+from rest_framework.authtoken.views import ObtainAuthToken
+from rest_framework.settings import api_settings
+
+from user.serializers import UserSerializer, AuthTokenSerializer
+
+
+class CreateUserView(generics.CreateAPIView):
+    """Create a new user in the system"""
+    serializer_class = UserSerializer
+
+
+class CreateTokenView(ObtainAuthToken):
+    """Create a new auth token for user"""
+    serializer_class = AuthTokenSerializer
+    renderer_classes = api_settings.DEFAULT_RENDERER_CLASSES
+
+```
+
+Creamso una nueva clase basandonos en ObtainAuthToken:
+
+Luego asignamos el serializer que creamos anteriormente  y agregamos el renderer_classes para poder ver este endpoint en el navegador. 
+
+> Agregamos la url en urls.py dentro de la app:
+
+```python
+from django.urls import path
+
+from user import views
+
+
+app_name = 'user'
+
+urlpatterns = [
+    path('create/', views.CreateUserView.as_view(), name='create'),
+    path('token/', views.CreateTokenView.as_view(), name='token'),
+]
+```
+
+Esto lo hacemos igual que en el caso anterior solo agregamos la nueva url y la vista que creamos. 
+
+**Ya podemos testear el autenticador en el navegador.**
+
+### Lo siguiente es crear el manage user endpoint:
+
+Este endpoint nos va a permitir modificar, borrar etc los usuarios ya creados.
+
+> Primero los tests: 
+
+```python
+from django.test import TestCase
+from django.contrib.auth import get_user_model
+from django.urls import reverse
+
+from rest_framework.test import APIClient
+from rest_framework import status
+
+
+CREATE_USER_URL = reverse('user:create')
+TOKEN_URL = reverse('user:token')
+ME_URL = reverse('user:me')
+
+
+def create_user(**params):
+    return get_user_model().objects.create_user(**params)
+
+
+class PublicUserApiTests(TestCase):
+    """Test Users API (public)"""
+
+    def setUP(self):
+        self.client = APIClient()
+
+    def test_create_valid_user_success(self):
+        """Test creating user with valid payload is succesfull"""
+        payload = {
+            'email': 'test@mainqlabsdev.com',
+            'password': 'testpass',
+            'name': 'Test name',
+        }
+        res = self.client.post(CREATE_USER_URL, payload)
+
+        self.assertEqual(res.status_code, status.HTTP_201_CREATED)
+        user = get_user_model().objects.get(**res.data)
+        self.assertTrue(user.check_password(payload['password']))
+        self.assertNotIn('password', res.data)
+
+    def test_user_exists(self):
+        """Test creating a user that already exists fails"""
+        payload = {'email': 'test@mainqlabsdev.com', 'password': 'testpass'}
+        create_user(**payload)
+
+        res = self.client.post(CREATE_USER_URL, payload)
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_password_too_short(self):
+        """Test that the password must be more than 5 characters"""
+        payload = {'email': 'test@mainqlabsdev.com', 'password': 'pw'}
+        res = self.client.post(CREATE_USER_URL, payload)
+
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+        user_exists = get_user_model().objects.filter(
+            email=payload['email']
+        ).exists()
+        self.assertFalse(user_exists)
+
+    def test_create_token_for_user(self):
+        """Test that token is created for the user"""
+        payload = {'email': 'test@mainqlabsdev.com', 'password': 'testpass'}
+        create_user(**payload)
+        res = self.client.post(TOKEN_URL, payload)
+
+        self.assertIn('token', res.data)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+
+    def test_create_token_invalid_credentials(self):
+        """Test that token is not created if invalid credentials are given"""
+        create_user(email='test@mainqlabsdev.com', password='testpass')
+        payload = {'email': 'test@mainqlabsdev.com', 'password': 'wrongpass'}
+        res = self.client.post(TOKEN_URL, payload)
+
+        self.assertNotIn('token', res.data)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_token_no_user(self):
+        """Test that token is not created if user doesn't exists"""
+        payload = {'email': 'test@mainqlabsdev.com', 'password': 'testpass'}
+        res = self.client.post(TOKEN_URL, payload)
+
+        self.assertNotIn('token', res.data)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_create_token_missing_field(self):
+        """Test that email and password are required"""
+        res = self.client.post(TOKEN_URL, {'email': 'one', 'password': ''})
+        self.assertNotIn('token', res.data)
+        self.assertEqual(res.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_retrieve_user_unathorized(self):
+        """Test that authentication is requerided for users"""
+        res = self.client.get(ME_URL)
+
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class PrivateUserApiTests(TestCase):
+    """Test API requests that require authentication"""
+
+    def setUp(self):
+        self.user = create_user(
+            email='test@mainqlabsdev.com',
+            password='testpass',
+            name='name'
+        )
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.user)
+
+    def test_retrieve_profile_success(self):
+        """Test retrieving profile for logged in used"""
+        res = self.client.get(ME_URL)
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data, {
+            'name': self.user.name,
+            'email': self.user.email
+        })
+
+    def test_post_me_not_allowed(self):
+        """Test that POST is not allowed on the me URL"""
+        res = self.client.post(ME_URL, {})
+
+        self.assertEqual(res.status_code, status.HTTP_405_METHOD_NOT_ALLOWED)
+
+    def test_update_user_profile(self):
+        """Test updating the user profile for authenticated user"""
+        payload = {'name': 'New Name', 'password': 'newpassword123'}
+
+        res = self.client.patch(ME_URL, payload)
+
+        self.user.refresh_from_db()
+        self.assertEqual(self.user.name, payload['name'])
+        self.assertTrue(self.user.check_password(payload['password']))
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+```
+
+Primero agregamos el URL en la parte superior de la pagina. Luego agregamos el test en Public para verificar que devuelve el estado no autorizado cuando se intenta acceder al endpoint. 
+
+Creamos una nueva clase para los Test para el caso que se requiera estar autenticado para realizar (ver, y modificar usuarios).
+
+En setUp creamos el usuario, creamos un client reutilizable y luego forzamos la autenticacion del usuario.
+
+El resto de los tests son bastante estandar, algo distinto surge en el test update: 
+
+Cuando realizamos el request patch actualizamos el valor en la base de datos, pero el objeto sigue teniendo el mismo valor que antes, por esto tenemos que usar la helper function refresh_from_db antes de realizar las verificaciones. 
+
+Testeamos y deberiamos tener el error ya que no tenemos implementadas las funciones. 
+> Creamos el user manager endpoint: 
+
+Vamos a usar el user serializer que ya tenemos, pero le vamso a gregar una fucion para hacer el update. Vamos a agregar una vista a partir del retrieveupdateview del modulo generics. 
+
+generamos la vista necesaria: en views.py
+
+```python
+from rest_framework import generics, authentication, permissions
+from rest_framework.authtoken.views import ObtainAuthToken
+from rest_framework.settings import api_settings
+
+from user.serializers import UserSerializer, AuthTokenSerializer
+
+
+class CreateUserView(generics.CreateAPIView):
+    """Create a new user in the system"""
+    serializer_class = UserSerializer
+
+
+class CreateTokenView(ObtainAuthToken):
+    """Create a new auth token for user"""
+    serializer_class = AuthTokenSerializer
+    renderer_classes = api_settings.DEFAULT_RENDERER_CLASSES
+
+
+class ManageUserView(generics.RetrieveUpdateAPIView):
+    """Manage the authenticated user"""
+    serializer_class = UserSerializer
+    authentication_classes = (authentication.TokenAuthentication,)
+    permission_classes = (permissions.IsAuthenticated,)
+
+    def get_object(self):
+        """Retrieve and return authentication user"""
+        return self.request.user
+```
+
+authentication es el mecanismo por el que ocurre la autenticacion, en este caso mediante token. 
+
+permissions es el grado de acceso que tiene el usuario entonces lo unico que pedimos en este caso es que este autenticado. 
+
+Luego vamos a agregar el get_object(). Normalmente en una vista lo que se hace es linkearla con el modelo como para devolver el modelo. Pero en este caso solo queremos devolver el modelo para el usuario que esta autenticado entonces tenemos que sobreescribir el metodo get_object(). cuando el get_object es llamado el request va a tener el user adjunto y esto se debe al authentication_classes que definimos anteriormente. La autentication class se encarga de autenticar el usuario y asignarselo al request. Cosas magicas de django. 
+
+> Modificamos el serializer. 
+
+en serializers vamso agregar el metodo update a nuestro user serializer: 
+
+```python
+from django.contrib.auth import get_user_model, authenticate
+from django.utils.translation import ugettext_lazy as _
+
+from rest_framework import serializers
+
+
+class UserSerializer(serializers.ModelSerializer):
+    """Serializer for the users objects"""
+
+    class Meta:
+        model = get_user_model()
+        fields = ('email', 'password', 'name')
+        extra_kwargs = {'password': {'write_only': True, 'min_length': 5}}
+
+    def create(self, validated_data):
+        """Create a new user with encrypted password and return it"""
+        return get_user_model().objects.create_user(**validated_data)
+
+    def update(self, instance, validated_data):
+        """Update a user, setting the password correctly and return it"""
+        password = validated_data.pop('password', None)
+        user = super().update(instance, validated_data)
+
+        if password:
+            user.set_password(password)
+            user.save()
+
+        return user
+
+
+class AuthTokenSerializer(serializers.Serializer):
+    """Serializer for the user authentication object"""
+    email = serializers.CharField()
+    password = serializers.CharField(
+        style={'input_type': 'password'},
+        trim_whitespace=False
+    )
+
+    def validate(self, attrs):
+        """Validate and authenticate the user"""
+        email = attrs.get('email')
+        password = attrs.get('password')
+
+        user = authenticate(
+            request=self.context.get('request'),
+            username=email,
+            password=password
+        )
+        if not user:
+            msg = _('Unable to authenticate with provided credentials')
+            raise serializers.ValidationError(msg, code='authentication')
+
+        attrs['user'] = user
+        return attrs
+```
+
+agregamos la funcion update debajo de la create: La principal finalidad de este es asegurarnos que la password es actualizada a traves de la set_password function en lugar de hacerlo a traves de la password que se esta dando. 
+
+El argumento instance es el instance del modelo que es linkeado a nuestro model serializer. Lo primero que hacemos es guardar la password y eliminarla de la lista validated_data, en lugar de solo hacer un get es mejor usar el pop. 
+
+A traves del super() hacemos un llamado al metodo update establecido por default en el modelserializer. Con esta podemos hacer uso de toda la funcionalidad de la clase por default y agregando algunas funcionalidades adicionales. 
+
+Por ultimo hacemos el update de la contraseña y guardamos. 
+
+> Tenemos que agregar la url:
+
+```python
+from django.urls import path
+
+from user import views
+
+
+app_name = 'user'
+
+urlpatterns = [
+    path('create/', views.CreateUserView.as_view(), name='create'),
+    path('token/', views.CreateTokenView.as_view(), name='token'),
+    path('me/', views.ManageUserView.as_view(), name='me')
+]
+```
+
+Igual que en los casos anteriores. 
+
+
 
