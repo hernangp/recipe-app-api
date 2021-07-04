@@ -23,11 +23,12 @@ USER user
 ```
 
 Cosas importantes del archivo anterior:
-> setear el UNBUFFERED to 1 evita problemas con python y la documentacion a la hora de correr el programa
-> En el home del directorio tenemos que crear la carpeta app, porque eso es lo que le estamos diciendo. 
-> IMPORTANTE: la parte de crear el usuario, es para crear un nuevo usuario que solo le permita correr el programa y no tener acceso al root, son temas de seguridad.
 
-Tenemos que crear el requirements.txt:
+setear el UNBUFFERED to 1 evita problemas con python y la documentacion a la hora de correr el programa. Principalmente es para mostrar mensajes de python directamente en pantalla
+En el home del directorio tenemos que crear la carpeta app, porque eso es lo que le estamos diciendo. 
+IMPORTANTE: la parte de crear el usuario, es para crear un nuevo usuario que solo le permita correr el programa y no tener acceso al root, son temas de seguridad.
+
+**Tenemos que crear el requirements.txt:**
 >django
 >djangorestframework 
 
@@ -45,7 +46,7 @@ docker build .
 
 Nos permite correr la docker image facilmente desde la direccion del proyecto. Manejar facilmente los distintos servicios por ejemplo: database, python application etc. 
 
-El docker-compose.yml es el archivo que contiene todas las configuraciones que decoran el proyecto. Permite que puedan correr en entornos aislados. 
+El docker-compose.yml es el archivo que contiene todas las configuraciones que decoran el proyecto. Permite que puedan correr en entornos aislados. El docker compose es una herramienta que nos permite correr nuestra iamgen docker facilmente desde el directorio que tenemos el proyecto.  
 
 > primero definimos la version de docker-compose que vamos a usar. 
 
@@ -88,7 +89,7 @@ Comentarios:
 
 ### Vamos a habilitar travis CI (Continue Integration) que automatiza los test y checks cada vez que pusheamos al repositorio.
 
-tenemos que ir la pagina travis-ci.com y vincular la cuenta de github. Una vez que veamos todos los repositorios tenemos que darle click en Trigger a build!
+Tenemos que ir la pagina travis-ci.com y vincular la cuenta de github. Una vez que veamos todos los repositorios tenemos que darle click en Trigger a build!
 
 #### Ahora viene la parte de los archivos:
 
@@ -181,17 +182,18 @@ Destroying test database for alias 'default'...
 
 ### comenzamos con la app:
 
-> Primero eliminamos los archivos que creamos de prueba para los test. 
+Primero eliminamos los archivos que creamos de prueba para los test. 
 
 en linea de comandos:
 ```
 docker-compose run app sh -c "python manage.py startapp core"
+```
 
 Esto va a crear una carpeta llamada core con los archivos de la app. Por el momento hacemos lo siguiente:
 
-> Creeamos una carpeta que se llama tests (esta carpeta va a nuclear todos los tests de core)
-> Adentro de la carpeta creamos un __init__.py  
-> Borramos el archivo test.py y views.py que creo django. 
+> - Creeamos una carpeta que se llama tests (esta carpeta va a nuclear todos los tests de core)
+> - Adentro de la carpeta creamos un __init__.py  
+> - Borramos el archivo test.py y views.py que creo django. 
 
 ### Comenzamos a crear el modelo customizado (primero encarando los tests)
 
@@ -234,7 +236,6 @@ Cosas importantes:
 
 > Se podria importar el módulo directo de django models pero no es recomendado por django. Usando la forma que se usa aca facilita mucho las cosas porque por cada parte que usa la funcion get_user_model solo tenes que modificar el settings.py para cambiarlo.
 > Como la contraseña viene encriptada hay que usar la funcion check_password que devuelve True or False en funcion de la contraseña. 
-
 
 ### Ya podemos crear el user model
 
@@ -303,6 +304,8 @@ solo agregamos la siguiente linea al final de todo:
 AUTH_USER_MODEL = 'core.User'
 ```
 **Es importante hacer esto antes de correr el makemigrations!**
+
+Si no lo hacemos antes de correr el migrations podemos tener problemas con los schemas. Siempre hay que hacer esto antes de correr el primer migration. 
 
 > Para que lo anterior??
 
@@ -870,7 +873,7 @@ Tenemos que modificar el archivo docker-compose.yml:
 command: >
     sh -c "python manage.py wait_for_db && 
     python manage.py migrate && 
-    python manage.py runserver 0.0.0.0:8000"
+    python manage.py runserver 0.0.0.0:5000"
 ```
 
 Modificando el docker-compose con lo anterior le estamos instruyendo que espere la base de datos este lista, luego realiza las migraciones correspondientes y recien despues de esto inicia el server. 
@@ -900,7 +903,7 @@ vamos a ver el siguiente mensaje en la terminal:
 app_1  | System check identified no issues (0 silenced).
 app_1  | June 29, 2021 - 15:01:25
 app_1  | Django version 3.2.4, using settings 'app.settings'
-app_1  | Starting development server at http://0.0.0.0:8000/
+app_1  | Starting development server at http://0.0.0.0:5000/
 app_1  | Quit the server with CONTROL-C.
 ```
 
@@ -1536,6 +1539,271 @@ urlpatterns = [
 ```
 
 Igual que en los casos anteriores. 
+
+### Vamos a crear la recipe app
+
+Para eso corremos al igual que antes el comando: 
+
+```
+docker-compose run --rm sh -c "python manage.py startapp recipe"
+```
+
+Luego borramos algunos archivos que no vamos a utilizar porque usaremos los que ya tenemos en la app core. 
+
+> delete:
+> - models.py
+> - tests.py
+> - admin
+> - migrations folder
+
+Creamos una nueva carpeta tests y agregamos el __init__.py 
+
+Y agregamos la nueva appp al settings.py.
+
+### Ahora vamos a crear un nuevo modelo para la base datos para agregar las tags
+
+Primero creamos una helper function que nos permita crear facilmente un nuevo usuario para nuestros tests: 
+En la parte superior de test_models.py en core app:
+
+
+```python
+def sample_user(email= 'test@mainqlabsdev.com', password='testpass'):
+    """Create a sample user"""
+    return get_user_model().object.create_user(email, password)
+```
+
+Siguiente a esto agregamos el test en test_models.py donde vamos a verificar que la representacion de la tag creada sea la correcta, en las ultimas lineas agregamos el test requerido:
+
+```python
+    def test_tag_str(self):
+        """Test the tag string representation"""
+        tag = models.Tag.objects.create(
+            user=sample_user(),
+            name='Vegan'
+        )
+
+        self.assertEqual(str(tag), tag.name)
+```
+
+Estamos verificando que al convertir la Tag a string no des de el nombre. 
+
+Corremos el test y deberia fallar ya que no creamos el Tag model aun:
+
+Vamos a crear el modelo entonces en models.py:
+
+```python
+from django.conf import settings # En la parte de los imports
+
+
+class Tag(models.Model):
+    """Tag to be used for a recipe"""
+    name = models.CharField(max_length=255)
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.CASCADE,
+    )
+
+    def __str__(self):
+        return self.name
+```
+
+Lo nuevo aqui que para asignar la foreing key user no referenciamos el user method directamente sino que lo importamos del django.conf settings. Que es la forma recomendada de traer cosas desde el settings. 
+
+Una vez que tenemos el modelo creado vamos a realizar el migrate:
+
+```
+docker-compose run app sh -c "python manage.py makemigrations"
+```
+
+Volvemos a correr el test y ya debiera estar todo ok. 
+
+### Vamos a crear una app para la lista de tags: 
+
+en test_tags_api.py : 
+
+```python
+from django.contrib.auth import get_user_model
+from django.urls import reverse
+from django.test import TestCase
+
+from rest_framework import status
+from rest_framework.test import APIClient
+
+from core.models import Tag
+
+from recipe.serializers import TagSerializer
+
+
+TAGS_URL = reverse('recipe:tag-list')
+
+
+class PublicTagsApiTests(TestCase):
+    """Test the publicly available tags API"""
+
+    def setUp(self):
+        self.client = APIClient()
+
+    def test_login_required(self):
+        """Test that login is required for retrieving tags"""
+        res = self.client.get(TAGS_URL)
+
+        self.assertEqual(res.status_code, status.HTTP_401_UNAUTHORIZED)
+
+
+class PrivateTagsApiTests(TestCase):
+
+    def setUp(self):
+        self.user = get_user_model().objects.create_user(
+            'test@mainqlabsdev.com',
+            'testpassword'
+        )
+
+        self.client = APIClient()
+        self.client.force_authenticate(self.user)
+
+    def test_retrieve_tags(self):
+        """Test Retrieving Tags"""
+        Tag.objects.create(user=self.user, name='Vegan')
+        Tag.objects.create(user=self.user,name='Dessert')
+
+        res = self.client.get(TAGS_URL)
+
+        tags = Tag.objects.all().order_by('-name')
+        serializer = TagSerializer(tags, many=True)
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(res.data, serializer.data)
+
+    def test_tags_limited_to_user(self):
+        """Test that tags returned are for the authenticated user"""
+        user2 = get_user_model().objects.create_user(
+            'other@mainqlabsdev.com',
+            'testpass2'
+        )
+        Tag.objects.create(user=user2, name='Fruity')
+        tag = Tag.objects.create(user=self.user, name='Comfort Food')
+
+        res = self.client.get(TAGS_URL)
+
+        self.assertEqual(res.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(res.data),1)
+        self.assertEqual(res.data[0]['name'], tag.name)
+```
+
+TAGS_URL = reverse('recipe:tag-list') lo que hace esta parte es ya sabiendo como se va a llamar la url la vamos a buscar a la app correspondiente. 
+
+Primero creamos los tests para la parte publica:
+
+Y lo unico que testamos es que cuando el ususario no esta registrado devuelva un error indicando que los tags solo los puede ver un usuario registrado. 
+
+Para la parte Privada:
+
+Lo primero que hacemos es crear un usuario y forzar su autorizacion en el setUP()
+
+Primero testeamos que devuelva las tags cuando hacemos el llamado a la API. En este caso cuando llamamos al serializer tenemos que indicarle el parametro MAny ya que nosotros vamos a estar llamando a varios objectos. 
+
+Verificamos que el status code sea el correcto y despues verificamos que la data del request este de acuerdo con la del serializer. 
+
+Por ultimo verificamos que solo devuelva las tags solo de usuario registrado. 
+
+### Vamos a implementar la feature para las tags:
+
+> Primero creamos el serializer entonces creamos un nuevo archivo serializer.py dentro de recipe:
+
+```python
+from rest_framework import serializers
+
+from core.models import Tag
+
+
+class TagSerializer(serializers.ModelSerializer):
+    """Serializer for Tag Objects"""
+
+    class Meta:
+        model = Tag
+        fields = ('id', 'name')
+        read_only_fields = ('id',)
+```
+
+> Cremos el views para nuestra nueva feature:
+
+```python
+from rest_framework import viewsets, mixins
+from rest_framework.authentication import TokenAuthentication
+from rest_framework.permissions import IsAuthenticated
+
+from core.models import Tag
+from recipe import serializers
+
+
+class TagViewSet(viewsets.GenericViewSet, mixins.ListModelMixin):
+    """Manage tags in database"""
+    authentication_classes = (TokenAuthentication,)
+    permission_classes = (IsAuthenticated,)
+    queryset = Tag.objects.all()
+    serializer_class = serializers.TagSerializer
+
+    def get_queryset(self):
+        """Return objects for the current authenticated user only"""
+        return self.queryset.filter(user=self.request.user).order_by('-name')
+```
+
+Como en este caso no necesitamos todos los funciones create delete etc, entonces solo usamos el listmodelfunctions para eso usamos una combinacion del viewsets y el listmodelmixin
+Nuevamente indicamos el authentication clases para indicar el tipo de autenticacion y luego el permission_classes para setear que es requerida la authenticacion para el request
+
+Tenemos que pisar el get_queryset para que solo devuelva el queryset para el usuario registrado y que devuelva las tagas ordenadas en orden alfabetico. 
+
+creamos la urls.py:
+
+```python
+from django.urls import path, include
+from rest_framework.routers import DefaultRouter
+
+from recipe import views
+
+router = DefaultRouter()
+router.register('tags', views.TagViewSet)
+
+app_name = 'recipe'
+
+urlpatterns = [
+    path('', include(router.urls))
+]
+```
+
+El defaultrouter es una funcional que nos crea directamnete la url para nuestro viewset, cuando tenes una viewset podes tener multiples urls asociadas a la viewset. El default router nos crea directamente las urls para todas las acciones de nuestra viewset. 
+
+Luego lo unico uqe tenemos que hacer es registrar nuevas rutas. Luego incluimos todas las urls que coincidan con nuestra app recipe. 
+
+Lo ultimo es relacionar las url agragadas con el urls principal:
+
+```python
+from django.contrib import admin
+from django.urls import path, include
+
+urlpatterns = [
+    path('admin/', admin.site.urls),
+    path('api/user/', include('user.urls')),
+    path('api/recipe/', include('recipe.urls')),
+]
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
