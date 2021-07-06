@@ -1787,6 +1787,39 @@ urlpatterns = [
 ]
 ```
 
+### Agregando la ingredients api:
+
+Todo el proceso es igual que para el caso de las tags. Lo unico que se cambia es el archivo views.py donde al tener codigo reutilizado refactorizamos el codigo de la siguiente forma:
+
+```python
+class BaseRecipeAttViewSet(viewsets.GenericViewSet,
+                           mixins.ListModelMixin,
+                           mixins.CreateModelMixin):
+    """Manage tags in database"""
+    authentication_classes = (TokenAuthentication,)
+    permission_classes = (IsAuthenticated,)
+
+    def get_queryset(self):
+        """Return objects for the current authenticated user only"""
+        return self.queryset.filter(user=self.request.user).order_by('-name')
+
+    def perform_create(self, serializer):
+        """Create a new tag"""
+        serializer.save(user=self.request.user)
+
+
+class TagViewSet(BaseRecipeAttViewSet):
+    """Manage Tags in the database"""
+    queryset = Tag.objects.all()
+    serializer_class = serializers.TagSerializer
+
+
+class IngredientViewSet(BaseRecipeAttViewSet):
+    queryset = Ingredient.objects.all()
+    serializer_class = serializers.IngredientSerializer
+```
+
+
 
 
 
